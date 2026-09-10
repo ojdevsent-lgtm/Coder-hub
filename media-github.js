@@ -1,146 +1,15 @@
 import { auth, db } from './firebase.js';
-import { collection, doc, getDocs, getDoc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js';
+import { collection, doc, getDocs, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js';
 import { getStorage, ref, uploadBytes, getDownloadURL } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-storage.js';
 import { GithubAuthProvider, linkWithPopup, reauthenticateWithPopup } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js';
-
-const storage=getStorage();
-const $=s=>document.querySelector(s);
-const roomId=()=>new URLSearchParams(location.search).get('room');
-const esc=v=>String(v??'').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]));
-const imageTypes=['image/png','image/jpeg','image/webp','image/gif','image/svg+xml','image/avif'];
-let githubToken=null;
-
-function currentUser(){return auth.currentUser}
-function notify(text){if(window.showToast){window.showToast(text)}else{const s=$('#syncState');if(s)s.textContent=text}}
-
-function injectUI(){
-  if(document.querySelector('[data-media-github-ui]'))return;
-  const actions=document.querySelector('.workspace-actions')||document.querySelector('.workspace-header')||document.querySelector('#workspaceView');
-  if(actions){
-    const wrap=document.createElement('div');wrap.className='media-github-actions';wrap.dataset.mediaGithubUi='1';
-    wrap.innerHTML='<button class="secondary" id="uploadAsset">Upload image</button><button class="secondary" id="pushGithub">Push to GitHub</button>';
-    actions.appendChild(wrap);
-  }
-  const workspace=document.querySelector('#workspaceView');
-  if(workspace){
-    const panel=document.createElement('section');panel.className='asset-panel';panel.id='assetPanel';panel.dataset.mediaGithubUi='1';
-    panel.innerHTML='<div class="asset-panel-head"><div><strong>Project assets</strong><span id="assetCount">0 images</span></div><label class="asset-upload"><input id="assetInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,image/avif" multiple>+ Add image</label></div><div id="assetGrid" class="asset-grid"><p class="muted">Upload images to use them in your project.</p></div>';
-    workspace.appendChild(panel);
-  }
-  const modal=document.createElement('div');modal.className='modal hidden';modal.id='githubPushModal';modal.dataset.mediaGithubUi='1';
-  modal.innerHTML='<div class="modal-card github-push-card"><button class="modal-close" id="githubPushClose">×</button><h2>Push project to GitHub</h2><p>Connect a GitHub account, choose a public repository and push the current Coder Hub project.</p><div id="githubStatus" class="muted">GitHub is not connected.</div><button class="primary" id="githubConnect">Connect GitHub</button><div id="githubPushForm" class="hidden"><label>Repository<input id="githubRepo" placeholder="owner/repository"></label><label>Branch<input id="githubBranch" value="main" placeholder="main"></label><label>Commit message<input id="githubMessage" value="Update from Coder Hub"></label><button class="primary" id="githubPushConfirm">Push project</button><div id="githubPushProgress" class="muted"></div></div></div>';
-  document.body.appendChild(modal);
-  $('#githubPushClose').onclick=()=>modal.classList.add('hidden');
-  $('#uploadAsset').onclick=()=>$('#assetInput')?.click();
-  $('#assetInput').onchange=e=>[...e.target.files].forEach(uploadImage);
-  $('#pushGithub').onclick=openGithubPush;
-  $('#githubConnect').onclick=connectGithub;
-  $('#githubPushConfirm').onclick=pushProject;
-}
-
-async function uploadImage(file){
-  const uid=currentUser()?.uid,rid=roomId();
-  if(!uid||!rid)return notify('Open a project before uploading images.');
-  if(!imageTypes.includes(file.type))return notify('Unsupported image type.');
-  if(file.size>8*1024*1024)return notify('Image must be 8 MB or smaller.');
-  const safe=file.name.replace(/[^a-zA-Z0-9._-]/g,'-').slice(0,100)||'image';
-  const path=`rooms/${rid}/assets/${Date.now()}-${safe}`;
-  try{
-    notify(`Uploading ${file.name}…`);
-    const storageRef=ref(storage,path);
-    await uploadBytes(storageRef,file,{contentType:file.type,customMetadata:{ownerId:uid,roomId:rid}});
-    const url=await getDownloadURL(storageRef);
-    const asset=doc(collection(db,'rooms',rid,'files'));
-    await setDoc(asset,{name:`assets/${safe}`,language:'asset',type:'image',mimeType:file.type,size:file.size,content:url,downloadURL:url,storagePath:path,ownerId:uid,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
-    notify('Image uploaded.');
-    renderAssets();
-  }catch(e){notify(`Upload failed: ${e.message||'check Firebase Storage rules'}`)}
-}
-
-async function renderAssets(){
-  const rid=roomId();if(!rid)return;
-  const grid=$('#assetGrid');if(!grid)return;
-  try{
-    const snap=await getDocs(collection(db,'rooms',rid,'files'));
-    const assets=snap.docs.map(d=>({id:d.id,...d.data()})).filter(x=>x.type==='image'||x.mimeType?.startsWith('image/'));
-    $('#assetCount').textContent=`${assets.length} image${assets.length===1?'':'s'}`;
-    grid.innerHTML=assets.length?assets.map(a=>`<article class="asset-card"><img src="${esc(a.downloadURL||a.content)}" alt="${esc(a.name)}" loading="lazy"><div class="asset-card-copy"><strong title="${esc(a.name)}">${esc(a.name)}</strong><button class="secondary asset-copy" data-url="${esc(a.downloadURL||a.content)}">Copy URL</button></div></article>`).join(''):'<p class="muted">Upload images to use them in your project.</p>';
-    grid.querySelectorAll('.asset-copy').forEach(b=>b.onclick=async()=>{await navigator.clipboard.writeText(b.dataset.url);b.textContent='Copied';setTimeout(()=>b.textContent='Copy URL',1000)});
-  }catch(e){grid.innerHTML='<p class="muted">Assets unavailable. Check Firebase Storage/Firestore rules.</p>'}
-}
-
-async function connectGithub(){
-  const u=currentUser();if(!u)return;
-  const status=$('#githubStatus');
-  try{
-    const provider=new GithubAuthProvider();provider.addScope('public_repo');
-    status.textContent='Opening GitHub authorization…';
-    let result;
-    const hasGithub=u.providerData.some(p=>p.providerId==='github.com');
-    result=hasGithub?await reauthenticateWithPopup(u,provider):await linkWithPopup(u,provider);
-    const credential=GithubAuthProvider.credentialFromResult(result);
-    githubToken=credential?.accessToken||null;
-    if(!githubToken)throw Error('GitHub authorization did not return an access token.');
-    status.textContent=`Connected as ${result.user.providerData.find(p=>p.providerId==='github.com')?.displayName||'GitHub user'}.`;
-    $('#githubConnect').textContent='GitHub connected';$('#githubConnect').disabled=true;$('#githubPushForm').classList.remove('hidden');
-  }catch(e){
-    if(e.code==='auth/popup-closed-by-user')status.textContent='GitHub connection cancelled.';
-    else if(e.code==='auth/provider-already-linked')status.textContent='GitHub is already linked. Try Connect again.';
-    else status.textContent=`Could not connect GitHub: ${e.message||'Enable GitHub in Firebase Authentication.'}`;
-  }
-}
-
-async function gh(url,options={}){
-  const r=await fetch(`https://api.github.com${url}`,{...options,headers:{Accept:'application/vnd.github+json',Authorization:`Bearer ${githubToken}`,'X-GitHub-Api-Version':'2022-11-28',...(options.headers||{})}});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok)throw Error(data.message||`GitHub API error ${r.status}`);
-  return data;
-}
-
+const storage=getStorage();const $=s=>document.querySelector(s);const roomId=()=>new URLSearchParams(location.search).get('room');const esc=v=>String(v??'').replace(/[&<>'\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','\"':'&quot;'}[c]));const imageTypes=['image/png','image/jpeg','image/webp','image/gif','image/svg+xml','image/avif'];let githubToken=null;
+function currentUser(){return auth.currentUser}function notify(text){if(window.showToast)window.showToast(text);else if($('#syncState'))$('#syncState').textContent=text}
+function injectUI(){if(document.querySelector('[data-media-github-ui]'))return;const actions=document.querySelector('.workspace-actions')||document.querySelector('.workspace-header')||document.querySelector('#workspaceView');if(actions){const wrap=document.createElement('div');wrap.className='media-github-actions';wrap.dataset.mediaGithubUi='1';wrap.innerHTML='<button class="secondary" id="uploadAsset">Upload image</button><button class="secondary" id="pushGithub">Push to GitHub</button>';actions.appendChild(wrap)}const workspace=$('#workspaceView');if(workspace){const panel=document.createElement('section');panel.className='asset-panel';panel.id='assetPanel';panel.dataset.mediaGithubUi='1';panel.innerHTML='<div class="asset-panel-head"><div><strong>Project assets</strong><span id="assetCount">0 images</span></div><label class="asset-upload"><input id="assetInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,image/avif" multiple>+ Add image</label></div><div id="assetGrid" class="asset-grid"><p class="muted">Upload images to use them in your project.</p></div>';workspace.appendChild(panel)}const modal=document.createElement('div');modal.className='modal hidden';modal.id='githubPushModal';modal.dataset.mediaGithubUi='1';modal.innerHTML='<div class="modal-card github-push-card"><button class="modal-close" id="githubPushClose">×</button><h2>Push project to GitHub</h2><p>Connect a GitHub account, choose a public repository and push the current Coder Hub project.</p><div id="githubStatus" class="muted">GitHub is not connected.</div><button class="primary" id="githubConnect">Connect GitHub</button><div id="githubPushForm" class="hidden"><label>Repository<input id="githubRepo" placeholder="owner/repository"></label><label>Branch<input id="githubBranch" value="main" placeholder="main"></label><label>Commit message<input id="githubMessage" value="Update from Coder Hub"></label><button class="primary" id="githubPushConfirm">Push project</button><div id="githubPushProgress" class="muted"></div></div></div>';document.body.appendChild(modal);$('#githubPushClose').onclick=()=>modal.classList.add('hidden');$('#uploadAsset').onclick=()=>$('#assetInput')?.click();$('#assetInput').onchange=e=>[...e.target.files].forEach(uploadImage);$('#pushGithub').onclick=openGithubPush;$('#githubConnect').onclick=connectGithub;$('#githubPushConfirm').onclick=pushProject}
+async function uploadImage(file){const uid=currentUser()?.uid,rid=roomId();if(!uid||!rid)return notify('Open a project before uploading images.');if(!imageTypes.includes(file.type))return notify('Unsupported image type.');if(file.size>8*1024*1024)return notify('Image must be 8 MB or smaller.');const safe=file.name.replace(/[^a-zA-Z0-9._-]/g,'-').slice(0,100)||'image';const path=`rooms/${rid}/assets/${Date.now()}-${safe}`;try{notify(`Uploading ${file.name}…`);const storageRef=ref(storage,path);await uploadBytes(storageRef,file,{contentType:file.type,customMetadata:{ownerId:uid,roomId:rid}});const url=await getDownloadURL(storageRef);const asset=doc(collection(db,'rooms',rid,'assets'));await setDoc(asset,{name:safe,type:'image',mimeType:file.type,size:file.size,downloadURL:url,storagePath:path,ownerId:uid,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});notify('Image uploaded.');renderAssets()}catch(e){notify(`Upload failed: ${e.message||'check Firebase Storage rules'}`)}}
+async function renderAssets(){const rid=roomId(),grid=$('#assetGrid');if(!rid||!grid)return;try{const snap=await getDocs(collection(db,'rooms',rid,'assets'));const assets=snap.docs.map(d=>({id:d.id,...d.data()}));$('#assetCount').textContent=`${assets.length} image${assets.length===1?'':'s'}`;grid.innerHTML=assets.length?assets.map(a=>`<article class="asset-card"><img src="${esc(a.downloadURL)}" alt="${esc(a.name)}" loading="lazy"><div class="asset-card-copy"><strong title="${esc(a.name)}">${esc(a.name)}</strong><button class="secondary asset-copy" data-url="${esc(a.downloadURL)}">Copy URL</button></div></article>`).join(''):'<p class="muted">Upload images to use them in your project.</p>';grid.querySelectorAll('.asset-copy').forEach(b=>b.onclick=async()=>{await navigator.clipboard.writeText(b.dataset.url);b.textContent='Copied';setTimeout(()=>b.textContent='Copy URL',1000)})}catch(e){grid.innerHTML='<p class="muted">Assets unavailable. Check Firebase rules.</p>'}}
+async function connectGithub(){const u=currentUser();if(!u)return;const status=$('#githubStatus');try{const provider=new GithubAuthProvider();provider.addScope('public_repo');status.textContent='Opening GitHub authorization…';const hasGithub=u.providerData.some(p=>p.providerId==='github.com');const result=hasGithub?await reauthenticateWithPopup(u,provider):await linkWithPopup(u,provider);const credential=GithubAuthProvider.credentialFromResult(result);githubToken=credential?.accessToken||null;if(!githubToken)throw Error('GitHub authorization did not return an access token.');status.textContent=`Connected as ${result.user.providerData.find(p=>p.providerId==='github.com')?.displayName||'GitHub user'}.`;$('#githubConnect').textContent='GitHub connected';$('#githubConnect').disabled=true;$('#githubPushForm').classList.remove('hidden')}catch(e){if(e.code==='auth/popup-closed-by-user')status.textContent='GitHub connection cancelled.';else if(e.code==='auth/provider-already-linked')status.textContent='GitHub is already linked. Try Connect again.';else status.textContent=`Could not connect GitHub: ${e.message||'Enable GitHub in Firebase Authentication.'}`}}
+async function gh(url,options={}){const r=await fetch(`https://api.github.com${url}`,{...options,headers:{Accept:'application/vnd.github+json',Authorization:`Bearer ${githubToken}`,'X-GitHub-Api-Version':'2022-11-28',...(options.headers||{})}});const data=await r.json().catch(()=>({}));if(!r.ok)throw Error(data.message||`GitHub API error ${r.status}`);return data}
 function cleanRepo(value){const m=value.trim().replace(/^https?:\/\/github\.com\//,'').replace(/\.git$/,'').replace(/^\/+|\/+$/g,'').split('/');if(m.length!==2||!m[0]||!m[1]||/[?#]/.test(value))throw Error('Enter a GitHub repository as owner/repository.');return m.join('/')}
-function bytesToBase64(bytes){let binary='';const chunk=0x8000;for(let i=0;i<bytes.length;i+=chunk)binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));return btoa(binary)}
-
-async function collectProjectFiles(rid){
-  const snap=await getDocs(collection(db,'rooms',rid,'files'));
-  return snap.docs.map(d=>({id:d.id,...d.data()})).filter(f=>f.type!=='image'&&f.language!=='asset'&&typeof f.content==='string'&&f.name&&!f.name.startsWith('.git/'));
-}
-
-async function pushProject(){
-  if(!githubToken)return connectGithub();
-  const rid=roomId(),repo=$('#githubRepo').value.trim(),branch=($('#githubBranch').value.trim()||'main'),message=($('#githubMessage').value.trim()||'Update from Coder Hub');
-  const progress=$('#githubPushProgress');
-  try{
-    const full=cleanRepo(repo);progress.textContent='Checking repository…';
-    const info=await gh(`/repos/${full}`);
-    if(info.private)throw Error('This Coder Hub workflow supports public GitHub repositories only.');
-    const branchInfo=await gh(`/repos/${full}/git/ref/heads/${encodeURIComponent(branch)}`);
-    const baseCommit=await gh(`/repos/${full}/git/commits/${branchInfo.object.sha}`);
-    const files=await collectProjectFiles(rid);
-    if(!files.length)throw Error('There are no text/code files to push.');
-    if(files.length>100)throw Error('Push is limited to 100 files at once.');
-    const entries=[];
-    for(let i=0;i<files.length;i++){
-      const f=files[i];progress.textContent=`Preparing ${i+1}/${files.length}: ${f.name}`;
-      const bytes=new TextEncoder().encode(f.content);
-      if(bytes.byteLength>700000)throw Error(`${f.name} is too large for this browser push.`);
-      const blob=await gh(`/repos/${full}/git/blobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:btoa(unescape(encodeURIComponent(f.content))),encoding:'base64'})});
-      entries.push({path:f.name.replace(/^\/+/,''),mode:'100644',type:'blob',sha:blob.sha});
-    }
-    progress.textContent='Creating Git tree…';
-    const tree=await gh(`/repos/${full}/git/trees`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_tree:baseCommit.tree.sha,tree:entries})});
-    const commit=await gh(`/repos/${full}/git/commits`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,tree:tree.sha,parents:[baseCommit.sha]})});
-    await gh(`/repos/${full}/git/refs/heads/${encodeURIComponent(branch)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({sha:commit.sha,force:false})});
-    progress.innerHTML=`Push complete. <a href="${esc(commit.html_url||`https://github.com/${full}/commit/${commit.sha}`)}" target="_blank" rel="noopener">View commit</a>`;
-  }catch(e){progress.textContent=`Push failed: ${e.message||'Unknown GitHub error'}`}
-}
-
-function openGithubPush(){
-  const modal=$('#githubPushModal');if(!modal)return;modal.classList.remove('hidden');
-  if(githubToken){$('#githubStatus').textContent='GitHub connected for this session.';$('#githubPushForm').classList.remove('hidden');$('#githubConnect').disabled=true}
-}
-
-injectUI();
-setInterval(()=>{if(!document.querySelector('[data-media-github-ui]'))injectUI();renderAssets()},4000);
-new MutationObserver(()=>{if(!document.querySelector('[data-media-github-ui]'))injectUI()}).observe(document.body,{childList:true,subtree:true});
-renderAssets();
-window.openGithubPush=openGithubPush;
+async function collectProjectFiles(rid){const snap=await getDocs(collection(db,'rooms',rid,'files'));return snap.docs.map(d=>({id:d.id,...d.data()})).filter(f=>f.type!=='image'&&f.language!=='asset'&&f.type!=='folder'&&typeof f.content==='string'&&f.name&&!f.name.startsWith('.git/'))}
+async function pushProject(){if(!githubToken)return connectGithub();const rid=roomId(),repo=$('#githubRepo').value.trim(),branch=($('#githubBranch').value.trim()||'main'),message=($('#githubMessage').value.trim()||'Update from Coder Hub'),progress=$('#githubPushProgress');try{const full=cleanRepo(repo);progress.textContent='Checking repository…';const info=await gh(`/repos/${full}`);if(info.private)throw Error('This Coder Hub workflow supports public GitHub repositories only.');const branchInfo=await gh(`/repos/${full}/git/ref/heads/${encodeURIComponent(branch)}`);const baseCommit=await gh(`/repos/${full}/git/commits/${branchInfo.object.sha}`);const files=await collectProjectFiles(rid);if(!files.length)throw Error('There are no text/code files to push.');if(files.length>100)throw Error('Push is limited to 100 files at once.');const entries=[];for(let i=0;i<files.length;i++){const f=files[i];progress.textContent=`Preparing ${i+1}/${files.length}: ${f.name}`;const blob=await gh(`/repos/${full}/git/blobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:f.content,encoding:'utf-8'})});entries.push({path:f.name.replace(/^\/+/,''),mode:'100644',type:'blob',sha:blob.sha})}progress.textContent='Creating Git tree…';const tree=await gh(`/repos/${full}/git/trees`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({base_tree:baseCommit.tree.sha,tree:entries})});const commit=await gh(`/repos/${full}/git/commits`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,tree:tree.sha,parents:[baseCommit.sha]})});await gh(`/repos/${full}/git/refs/heads/${encodeURIComponent(branch)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({sha:commit.sha,force:false})});progress.innerHTML=`Push complete. <a href="${esc(commit.html_url||`https://github.com/${full}/commit/${commit.sha}`)}" target="_blank" rel="noopener">View commit</a>`}catch(e){progress.textContent=`Push failed: ${e.message||'Unknown GitHub error'}`}}
+function openGithubPush(){const modal=$('#githubPushModal');if(!modal)return;modal.classList.remove('hidden');if(githubToken){$('#githubStatus').textContent='GitHub connected for this session.';$('#githubPushForm').classList.remove('hidden');$('#githubConnect').disabled=true}}injectUI();setInterval(()=>{if(!document.querySelector('[data-media-github-ui]'))injectUI();renderAssets()},4000);new MutationObserver(()=>{if(!document.querySelector('[data-media-github-ui]'))injectUI()}).observe(document.body,{childList:true,subtree:true});renderAssets();window.openGithubPush=openGithubPush;
