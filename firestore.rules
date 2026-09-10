@@ -1,21 +1,54 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
       return request.auth != null;
     }
 
+    function isOwner(roomId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerId == request.auth.uid;
+    }
+
+    function isMember(roomId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+
     match /rooms/{roomId} {
-      allow read, create, update: if signedIn();
-      allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+      // A signed-in user may read room metadata so a shared room ID can be resolved.
+      // Project content is protected by membership-aware rules below.
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid;
+
+      // Members can collaborate on the room document, but cannot transfer ownership.
+      allow update: if isMember(roomId)
+        && request.resource.data.ownerId == resource.data.ownerId;
+
+      allow delete: if isOwner(roomId);
 
       match /members/{userId} {
-        allow read, write: if signedIn();
+        allow read: if isMember(roomId) || isOwner(roomId);
+
+        // A user can add/update only their own membership record.
+        allow create, update: if signedIn()
+          && userId == request.auth.uid;
+
+        allow delete: if signedIn()
+          && (userId == request.auth.uid || isOwner(roomId));
       }
 
       match /messages/{messageId} {
-        allow read, create: if signedIn();
-        allow update, delete: if signedIn() && resource.data.userId == request.auth.uid;
+        allow read: if isMember(roomId);
+
+        allow create: if isMember(roomId)
+          && request.resource.data.userId == request.auth.uid;
+
+        allow update, delete: if isMember(roomId)
+          && resource.data.userId == request.auth.uid;
       }
     }
   }
