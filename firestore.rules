@@ -17,36 +17,36 @@ service cloud.firestore {
     }
 
     match /rooms/{roomId} {
-      // A signed-in user may read room metadata so a shared room ID can be resolved.
-      // Project content is protected by membership-aware rules below.
+      // Room documents contain metadata only; project source lives under /files.
       allow read: if signedIn();
-
       allow create: if signedIn()
         && request.resource.data.ownerId == request.auth.uid;
-
-      // Members can collaborate on the room document, but cannot transfer ownership.
       allow update: if isMember(roomId)
         && request.resource.data.ownerId == resource.data.ownerId;
-
       allow delete: if isOwner(roomId);
 
       match /members/{userId} {
         allow read: if isMember(roomId) || isOwner(roomId);
-
-        // A user can add/update only their own membership record.
-        allow create, update: if signedIn()
-          && userId == request.auth.uid;
-
+        allow create, update: if signedIn() && userId == request.auth.uid;
         allow delete: if signedIn()
           && (userId == request.auth.uid || isOwner(roomId));
       }
 
+      match /files/{fileId} {
+        allow read: if isMember(roomId);
+        allow create: if isMember(roomId)
+          && request.resource.data.ownerId == request.auth.uid;
+        allow update: if isMember(roomId)
+          && resource.data.ownerId == request.auth.uid;
+        allow delete: if isOwner(roomId) || (
+          isMember(roomId) && resource.data.ownerId == request.auth.uid
+        );
+      }
+
       match /messages/{messageId} {
         allow read: if isMember(roomId);
-
         allow create: if isMember(roomId)
           && request.resource.data.userId == request.auth.uid;
-
         allow update, delete: if isMember(roomId)
           && resource.data.userId == request.auth.uid;
       }
