@@ -1,164 +1,32 @@
 import { auth, db } from './firebase.js';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js';
-import { collection, doc, setDoc, updateDoc, addDoc, onSnapshot, serverTimestamp, query, orderBy } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js';
-
-const $ = selector => document.querySelector(selector);
-const modal = $('#modal'), authModal = $('#authModal');
-const status = $('#status'), signin = $('#signin');
-const input = $('#roomName'), action = $('#modalAction');
-const homeView = $('#homeView'), featuresView = $('#featuresView'), workspaceView = $('#workspaceView');
-const codeEditor = $('#codeEditor'), syncState = $('#syncState');
-const membersEl = $('#members'), memberCount = $('#memberCount'), messagesEl = $('#messages');
-let authMode = 'signin', roomId = null, roomUnsub = null, fileUnsub = null, membersUnsub = null, messagesUnsub = null;
-let saveTimer = null, applyingRemote = false;
-
-function openRoom(mode) {
-  $('#modalTitle').textContent = mode === 'create' ? 'Create a room' : 'Join a room';
-  $('#modalText').textContent = mode === 'create' ? 'Choose a room name to get started.' : 'Enter the room ID.';
-  input.placeholder = mode === 'create' ? 'e.g. frontend-team' : 'Room ID';
-  action.textContent = mode === 'create' ? 'Create room' : 'Join room';
-  modal.classList.remove('hidden'); input.focus();
-}
-function openAuth(mode = 'signin') {
-  authMode = mode; const signup = mode === 'signup';
-  $('#authTitle').textContent = signup ? 'Create your account' : 'Sign in';
-  $('#authText').textContent = signup ? 'Create an account to start coding with your team.' : 'Sign in to create rooms and collaborate with your team.';
-  $('#authAction').textContent = signup ? 'Create account' : 'Sign in';
-  $('#authToggle').textContent = signup ? 'Already have an account? Sign in' : 'Need an account? Create one';
-  $('#authMessage').textContent = '';
-  authModal.classList.remove('hidden'); $('#authEmail').focus();
-}
-function friendlyAuthError(error) {
-  const messages = {'auth/invalid-credential':'Email or password is incorrect.','auth/email-already-in-use':'An account already exists with this email.','auth/weak-password':'Use a password with at least 6 characters.','auth/invalid-email':'Enter a valid email address.','auth/too-many-requests':'Too many attempts. Try again later.','auth/operation-not-allowed':'Enable Email/Password sign-in in Firebase Authentication.'};
-  return messages[error.code] || error.message || 'Authentication failed.';
-}
-function showError(message) { status.textContent = message; }
-
-$('#createRoom').onclick = () => auth.currentUser ? openRoom('create') : openAuth('signin');
-$('#joinRoom').onclick = () => auth.currentUser ? openRoom('join') : openAuth('signin');
-signin.onclick = () => auth.currentUser ? signOut(auth) : openAuth('signin');
-$('#close').onclick = () => modal.classList.add('hidden');
-$('#authClose').onclick = () => authModal.classList.add('hidden');
-modal.onclick = e => { if (e.target === modal) modal.classList.add('hidden'); };
-authModal.onclick = e => { if (e.target === authModal) authModal.classList.add('hidden'); };
-$('#authToggle').onclick = () => openAuth(authMode === 'signin' ? 'signup' : 'signin');
-
-$('#authForm').addEventListener('submit', async e => {
-  e.preventDefault(); const button = $('#authAction'); button.disabled = true; $('#authMessage').textContent = 'Working…';
-  try {
-    const email = $('#authEmail').value.trim(), password = $('#authPassword').value;
-    if (authMode === 'signup') {
-      const credential = await createUserWithEmailAndPassword(auth, email, password);
-      await updateProfile(credential.user, { displayName: email.split('@')[0] });
-    } else await signInWithEmailAndPassword(auth, email, password);
-    authModal.classList.add('hidden'); $('#authForm').reset();
-  } catch (error) { $('#authMessage').textContent = friendlyAuthError(error); }
-  finally { button.disabled = false; }
-});
-
-async function createRoom(name) {
-  const cleanName = name.trim().replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 32);
-  if (!cleanName) return showError('Choose a valid room name.');
-  const roomRef = doc(collection(db, 'rooms'));
-  await setDoc(roomRef, { name: cleanName, ownerId: auth.currentUser.uid, language: 'javascript', createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-  await setDoc(doc(db, 'rooms', roomRef.id, 'members', auth.currentUser.uid), {
-    uid: auth.currentUser.uid,
-    name: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
-    email: auth.currentUser.email,
-    joinedAt: serverTimestamp(),
-    lastSeen: serverTimestamp()
-  });
-  await setDoc(doc(db, 'rooms', roomRef.id, 'files', 'main-js'), {
-    name: 'main.js',
-    language: 'javascript',
-    content: '// Welcome to Coder Hub\n\nconsole.log("Hello, Coder Hub!");\n',
-    ownerId: auth.currentUser.uid,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp()
-  });
-  return roomRef.id;
-}
-async function joinRoom(value) {
-  const clean = value.trim();
-  if (!clean) throw new Error('Enter a room ID.');
-  return clean;
-}
-
-async function enterRoom(id) {
-  roomId = id;
-  modal.classList.add('hidden'); input.value = '';
-  homeView.classList.add('hidden'); featuresView.classList.add('hidden'); workspaceView.classList.remove('hidden');
-  $('#workspaceTitle').textContent = 'Loading room…'; $('#roomMeta').textContent = `Room ID: ${id}`;
-  const roomRef = doc(db, 'rooms', id);
-  await setDoc(doc(db, 'rooms', id, 'members', auth.currentUser.uid), { uid: auth.currentUser.uid, name: auth.currentUser.displayName || auth.currentUser.email.split('@')[0], email: auth.currentUser.email, joinedAt: serverTimestamp(), lastSeen: serverTimestamp() }, { merge: true });
-
-  roomUnsub?.(); fileUnsub?.(); membersUnsub?.(); messagesUnsub?.();
-  roomUnsub = onSnapshot(roomRef, snap => {
-    if (!snap.exists()) { leaveRoom(); return showError('Room not found.'); }
-    const data = snap.data(); $('#workspaceTitle').textContent = data.name || 'Coding room';
-    $('#fileLabel').textContent = 'main.js';
-  }, error => { syncState.textContent = 'Room error'; showError(error.message); });
-
-  const fileRef = doc(db, 'rooms', id, 'files', 'main-js');
-  fileUnsub = onSnapshot(fileRef, snap => {
-    if (!snap.exists()) return;
-    const data = snap.data();
-    if (!applyingRemote && typeof data.content === 'string') {
-      applyingRemote = true; codeEditor.value = data.content; applyingRemote = false;
-    }
-    syncState.textContent = 'Synced';
-  }, error => { syncState.textContent = 'Sync error'; showError(error.message); });
-
-  membersUnsub = onSnapshot(collection(db, 'rooms', id, 'members'), snap => {
-    const members = snap.docs.map(d => d.data());
-    memberCount.textContent = members.length;
-    membersEl.innerHTML = members.map(m => `<div class="member"><span class="avatar">${escapeHtml((m.name || '?')[0].toUpperCase())}</span><span>${escapeHtml(m.name || 'Developer')}</span></div>`).join('');
-  }, error => showError(error.message));
-
-  messagesUnsub = onSnapshot(query(collection(db, 'rooms', id, 'messages'), orderBy('createdAt', 'asc')), snap => {
-    messagesEl.innerHTML = snap.docs.map(d => { const m=d.data(); return `<div class="message"><b>${escapeHtml(m.name || 'Developer')}</b><p>${escapeHtml(m.text || '')}</p></div>`; }).join('');
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  }, () => { messagesEl.innerHTML = '<p class="muted">Chat is unavailable until Firestore is ready.</p>'; });
-}
-
-codeEditor.addEventListener('input', () => {
-  if (!roomId || applyingRemote) return;
-  syncState.textContent = 'Saving…'; clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    try {
-      await updateDoc(doc(db, 'rooms', roomId, 'files', 'main-js'), { content: codeEditor.value, updatedAt: serverTimestamp() });
-      syncState.textContent = 'Saved';
-    } catch (error) { syncState.textContent = 'Save failed'; }
-  }, 350);
-});
-
-$('#chatForm').addEventListener('submit', async e => {
-  e.preventDefault(); const field = $('#chatInput'); const text = field.value.trim();
-  if (!roomId || !text) return;
-  field.value = '';
-  try { await addDoc(collection(db, 'rooms', roomId, 'messages'), { userId: auth.currentUser.uid, name: auth.currentUser.displayName || auth.currentUser.email.split('@')[0], text, createdAt: serverTimestamp() }); }
-  catch (error) { showError('Could not send message.'); }
-});
-
-function leaveRoom() {
-  roomUnsub?.(); fileUnsub?.(); membersUnsub?.(); messagesUnsub?.(); roomUnsub = fileUnsub = membersUnsub = messagesUnsub = null; roomId = null;
-  workspaceView.classList.add('hidden'); homeView.classList.remove('hidden'); featuresView.classList.remove('hidden');
-  status.textContent = auth.currentUser ? `Signed in as ${auth.currentUser.displayName || auth.currentUser.email}` : 'Ready to collaborate';
-}
-$('#leaveRoom').onclick = leaveRoom;
-
-function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char])); }
-
-action.onclick = async () => {
-  if (!auth.currentUser) return openAuth('signin');
-  action.disabled = true;
-  try { const id = action.textContent === 'Create room' ? await createRoom(input.value) : await joinRoom(input.value); await enterRoom(id); }
-  catch (error) { showError(error.message || 'Could not open room.'); }
-  finally { action.disabled = false; }
-};
-input.addEventListener('keydown', e => { if (e.key === 'Enter') action.click(); });
-
-onAuthStateChanged(auth, user => {
-  if (user) { status.textContent = `Signed in as ${user.displayName || user.email}`; signin.textContent = 'Sign out'; }
-  else { status.textContent = 'Ready to collaborate'; signin.textContent = 'Sign in'; if (roomId) leaveRoom(); }
-});
+import { collection, doc, setDoc, getDoc, updateDoc, addDoc, onSnapshot, serverTimestamp, query, orderBy } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore.js';
+import { EditorState } from 'https://esm.sh/@codemirror/state@6.5.2';
+import { EditorView, keymap, lineNumbers } from 'https://esm.sh/@codemirror/view@6.36.5';
+import { defaultKeymap, history, historyKeymap, indentWithTab } from 'https://esm.sh/@codemirror/commands@6.8.1';
+import { javascript } from 'https://esm.sh/@codemirror/lang-javascript@6.2.3';
+const $=s=>document.querySelector(s), modal=$('#modal'), authModal=$('#authModal'), status=$('#status'), signin=$('#signin'), input=$('#roomName'), action=$('#modalAction');
+let authMode='signin',roomId=null,currentFileId=null,roomUnsub=null,filesUnsub=null,membersUnsub=null,messagesUnsub=null,editorView=null,saveTimer=null,remoteApplying=false,files=[];
+const userName=()=>auth.currentUser?.displayName||auth.currentUser?.email?.split('@')[0]||'Developer';
+const escapeHtml=v=>String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+function openRoom(mode){$('#modalTitle').textContent=mode==='create'?'Create a room':'Join a room';$('#modalText').textContent=mode==='create'?'Choose a room name to get started.':'Enter the room ID to join.';input.placeholder=mode==='create'?'e.g. frontend-team':'Room ID';action.textContent=mode==='create'?'Create room':'Join room';$('#roomMessage').textContent='';modal.classList.remove('hidden');input.focus()}
+function openAuth(mode='signin'){authMode=mode;const s=mode==='signup';$('#authTitle').textContent=s?'Create your account':'Sign in';$('#authText').textContent=s?'Create an account to start coding with your team.':'Sign in to create rooms and collaborate with your team.';$('#authAction').textContent=s?'Create account':'Sign in';$('#authToggle').textContent=s?'Already have an account? Sign in':'Need an account? Create one';$('#authMessage').textContent='';authModal.classList.remove('hidden');$('#authEmail').focus()}
+function authError(e){return ({'auth/invalid-credential':'Email or password is incorrect.','auth/email-already-in-use':'An account already exists with this email.','auth/weak-password':'Use a password with at least 6 characters.','auth/invalid-email':'Enter a valid email address.','auth/too-many-requests':'Too many attempts. Try again later.','auth/operation-not-allowed':'Enable Email/Password in Firebase Authentication.'})[e.code]||e.message||'Authentication failed.'}
+$('#createRoom').onclick=()=>auth.currentUser?openRoom('create'):openAuth('signin');$('#joinRoom').onclick=()=>auth.currentUser?openRoom('join'):openAuth('signin');signin.onclick=()=>auth.currentUser?signOut(auth):openAuth('signin');$('#close').onclick=()=>modal.classList.add('hidden');$('#authClose').onclick=()=>authModal.classList.add('hidden');$('#authToggle').onclick=()=>openAuth(authMode==='signin'?'signup':'signin');
+$('#authForm').onsubmit=async e=>{e.preventDefault();const b=$('#authAction');b.disabled=true;$('#authMessage').textContent='Working…';try{const email=$('#authEmail').value.trim(),password=$('#authPassword').value;if(authMode==='signup'){const c=await createUserWithEmailAndPassword(auth,email,password);await updateProfile(c.user,{displayName:email.split('@')[0]})}else await signInWithEmailAndPassword(auth,email,password);authModal.classList.add('hidden');e.target.reset()}catch(err){$('#authMessage').textContent=authError(err)}finally{b.disabled=false}};
+async function createRoom(name){const clean=name.trim().replace(/[^a-zA-Z0-9 _-]/g,'').slice(0,32);if(!clean)throw Error('Choose a valid room name.');const room=doc(collection(db,'rooms'));await setDoc(room,{name:clean,ownerId:auth.currentUser.uid,language:'javascript',createdAt:serverTimestamp(),updatedAt:serverTimestamp()});await setDoc(doc(db,'rooms',room.id,'members',auth.currentUser.uid),{uid:auth.currentUser.uid,name:userName(),email:auth.currentUser.email,role:'owner',joinedAt:serverTimestamp(),lastSeen:serverTimestamp()});await setDoc(doc(db,'rooms',room.id,'files','main-js'),{name:'main.js',language:'javascript',content:'// Welcome to Coder Hub\n\nconsole.log("Hello, Coder Hub!");\n',ownerId:auth.currentUser.uid,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});return room.id}
+async function joinRoom(id){id=id.trim();if(!id)throw Error('Enter a room ID.');const snap=await getDoc(doc(db,'rooms',id));if(!snap.exists())throw Error('Room not found. Check the room ID.');return id}
+function updateCursor(){if(!editorView)return;const p=editorView.state.selection.main.head,l=editorView.state.doc.lineAt(p);$('#cursorInfo').textContent=`Ln ${l.number}, Col ${p-l.from+1}`}
+function queueSave(){if(!roomId||!currentFileId||!editorView)return;$('#syncState').textContent='Saving…';clearTimeout(saveTimer);saveTimer=setTimeout(async()=>{try{await updateDoc(doc(db,'rooms',roomId,'files',currentFileId),{content:editorView.state.doc.toString(),updatedAt:serverTimestamp()});$('#syncState').textContent='Saved'}catch(e){$('#syncState').textContent='Save failed'}},450)}
+function setupEditor(content=''){editorView?.destroy();editorView=new EditorView({state:EditorState.create({doc:content,extensions:[lineNumbers(),history(),keymap.of([...defaultKeymap,...historyKeymap,indentWithTab]),javascript(),EditorView.lineWrapping,EditorView.updateListener.of(u=>{if(u.docChanged&&!remoteApplying)queueSave();updateCursor()})]}),parent:$('#codeEditor')});updateCursor()}
+function renderFiles(){$('#fileList').innerHTML=files.map(f=>`<button class="file-item ${f.id===currentFileId?'active':''}" data-id="${escapeHtml(f.id)}"><span>▣</span>${escapeHtml(f.name)}</button>`).join('')||'<p class="muted empty-files">No files yet.</p>';document.querySelectorAll('.file-item').forEach(b=>b.onclick=()=>selectFile(b.dataset.id))}
+function selectFile(id){const f=files.find(x=>x.id===id);if(!f)return;currentFileId=id;$('#fileLabel').textContent=f.name;setupEditor(f.content||'');renderFiles()}
+async function newFile(){if(!roomId)return;let name=prompt('File name, e.g. app.js');if(!name)return;name=name.trim().replace(/[^a-zA-Z0-9._-]/g,'').slice(0,80);if(!name||files.some(f=>f.name===name))return;try{const r=await addDoc(collection(db,'rooms',roomId,'files'),{name,language:name.endsWith('.css')?'css':name.endsWith('.html')?'html':'javascript',content:'',ownerId:auth.currentUser.uid,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});selectFile(r.id)}catch(e){$('#syncState').textContent='Create failed'}}
+async function enterRoom(id){roomId=id;modal.classList.add('hidden');input.value='';$('#homeView').classList.add('hidden');$('#featuresView').classList.add('hidden');$('#workspaceView').classList.remove('hidden');$('#workspaceTitle').textContent='Loading room…';$('#roomMeta').textContent=`Room ID: ${id}`;await setDoc(doc(db,'rooms',id,'members',auth.currentUser.uid),{uid:auth.currentUser.uid,name:userName(),email:auth.currentUser.email,lastSeen:serverTimestamp()},{merge:true});roomUnsub?.();filesUnsub?.();membersUnsub?.();messagesUnsub?.();
+roomUnsub=onSnapshot(doc(db,'rooms',id),s=>{if(!s.exists())return leaveRoom();$('#workspaceTitle').textContent=s.data().name||'Coding room'});
+filesUnsub=onSnapshot(query(collection(db,'rooms',id,'files'),orderBy('createdAt','asc')),s=>{files=s.docs.map(d=>({id:d.id,...d.data()}));if(!currentFileId||!files.some(f=>f.id===currentFileId)){if(files[0])selectFile(files[0].id);else setupEditor('')}else{const f=files.find(x=>x.id===currentFileId);if(f&&editorView&&f.content!==editorView.state.doc.toString()){remoteApplying=true;editorView.dispatch({changes:{from:0,to:editorView.state.doc.length,insert:f.content||''}});remoteApplying=false;$('#syncState').textContent='Synced'}}renderFiles()},e=>$('#syncState').textContent='File sync error');
+membersUnsub=onSnapshot(collection(db,'rooms',id,'members'),s=>{$('#memberCount').textContent=s.size;$('#members').innerHTML=s.docs.map(d=>{const m=d.data();return `<div class="member"><span class="avatar">${escapeHtml((m.name||'?')[0].toUpperCase())}</span><span>${escapeHtml(m.name||'Developer')}</span>${m.role==='owner'?'<small>owner</small>':''}</div>`}).join('')});
+messagesUnsub=onSnapshot(query(collection(db,'rooms',id,'messages'),orderBy('createdAt','asc')),s=>{$('#messages').innerHTML=s.docs.map(d=>{const m=d.data();return `<div class="message"><b>${escapeHtml(m.name||'Developer')}</b><p>${escapeHtml(m.text||'')}</p></div>`}).join('');$('#messages').scrollTop=$('#messages').scrollHeight},e=>{$('#messages').innerHTML='<p class="muted">Chat unavailable until Firestore is ready.</p>'})}
+$('#modalAction').onclick=async()=>{if(!auth.currentUser)return openAuth('signin');action.disabled=true;try{await enterRoom(action.textContent==='Create room'?await createRoom(input.value):await joinRoom(input.value))}catch(e){$('#roomMessage').textContent=e.message}finally{action.disabled=false}};input.addEventListener('keydown',e=>{if(e.key==='Enter')action.click()});$('#newFile').onclick=newFile;$('#copyRoom').onclick=async()=>{try{await navigator.clipboard.writeText(roomId);$('#copyRoom').textContent='Copied!';setTimeout(()=>$('#copyRoom').textContent='Copy ID',1200)}catch(e){}};$('#chatForm').onsubmit=async e=>{e.preventDefault();const f=$('#chatInput'),text=f.value.trim();if(!roomId||!text)return;f.value='';try{await addDoc(collection(db,'rooms',roomId,'messages'),{userId:auth.currentUser.uid,name:userName(),text,createdAt:serverTimestamp()})}catch(e){}};
+function leaveRoom(){roomUnsub?.();filesUnsub?.();membersUnsub?.();messagesUnsub?.();editorView?.destroy();roomUnsub=filesUnsub=membersUnsub=messagesUnsub=null;roomId=currentFileId=null;files=[];$('#workspaceView').classList.add('hidden');$('#homeView').classList.remove('hidden');$('#featuresView').classList.remove('hidden')}
+$('#leaveRoom').onclick=leaveRoom;onAuthStateChanged(auth,u=>{if(u){status.textContent=`Signed in as ${userName()}`;signin.textContent='Sign out'}else{status.textContent='Ready to collaborate';signin.textContent='Sign in';if(roomId)leaveRoom()}});
