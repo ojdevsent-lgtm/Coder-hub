@@ -2,53 +2,75 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
-    }
-
+    function signedIn() { return request.auth != null; }
     function isOwner(roomId) {
-      return signedIn()
-        && get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerId == request.auth.uid;
+      return signedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.ownerId == request.auth.uid;
     }
-
     function isMember(roomId) {
-      return signedIn()
-        && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+      return signedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
     }
 
     match /rooms/{roomId} {
-      // Room documents contain metadata only; project source lives under /files.
+      // Joining by ID requires reading room metadata before a member document exists.
       allow read: if signedIn();
-      allow create: if signedIn()
-        && request.resource.data.ownerId == request.auth.uid;
-      allow update: if isMember(roomId)
-        && request.resource.data.ownerId == resource.data.ownerId;
+      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
+      allow update: if isMember(roomId) && request.resource.data.ownerId == resource.data.ownerId;
       allow delete: if isOwner(roomId);
 
       match /members/{userId} {
         allow read: if isMember(roomId) || isOwner(roomId);
         allow create, update: if signedIn() && userId == request.auth.uid;
-        allow delete: if signedIn()
-          && (userId == request.auth.uid || isOwner(roomId));
+        allow delete: if signedIn() && (userId == request.auth.uid || isOwner(roomId));
       }
 
       match /files/{fileId} {
         allow read: if isMember(roomId);
-        allow create: if isMember(roomId)
-          && request.resource.data.ownerId == request.auth.uid;
-        allow update: if isMember(roomId)
-          && resource.data.ownerId == request.auth.uid;
-        allow delete: if isOwner(roomId) || (
-          isMember(roomId) && resource.data.ownerId == request.auth.uid
-        );
+        allow create: if isMember(roomId) && request.resource.data.ownerId == request.auth.uid;
+        // Any room member may sync shared editor content, but ownership cannot change.
+        allow update: if isMember(roomId) && request.resource.data.ownerId == resource.data.ownerId;
+        allow delete: if isOwner(roomId) || (isMember(roomId) && resource.data.ownerId == request.auth.uid);
       }
 
       match /messages/{messageId} {
         allow read: if isMember(roomId);
-        allow create: if isMember(roomId)
-          && request.resource.data.userId == request.auth.uid;
-        allow update, delete: if isMember(roomId)
-          && resource.data.userId == request.auth.uid;
+        allow create: if isMember(roomId) && request.resource.data.userId == request.auth.uid;
+        allow update, delete: if isMember(roomId) && resource.data.userId == request.auth.uid;
+      }
+
+      match /typing/{userId} {
+        allow read: if isMember(roomId);
+        allow create, update, delete: if isMember(roomId) && userId == request.auth.uid;
+      }
+
+      match /calls/{callId} {
+        allow read, write: if isMember(roomId);
+
+        match /participants/{userId} {
+          allow read: if isMember(roomId);
+          allow create, update, delete: if isMember(roomId) && userId == request.auth.uid;
+        }
+
+        match /pairs/{pairId} {
+          allow read, write: if isMember(roomId);
+          match /aCandidates/{candidateId} {
+            allow read, create: if isMember(roomId);
+            allow delete: if isMember(roomId);
+          }
+          match /bCandidates/{candidateId} {
+            allow read, create: if isMember(roomId);
+            allow delete: if isMember(roomId);
+          }
+        }
+      }
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && userId == request.auth.uid;
+      allow create, update: if signedIn() && userId == request.auth.uid;
+      allow delete: if signedIn() && userId == request.auth.uid;
+
+      match /projects/{projectId} {
+        allow read, create, update, delete: if signedIn() && userId == request.auth.uid;
       }
     }
   }
