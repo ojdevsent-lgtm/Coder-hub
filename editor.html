@@ -1,10 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Coder Hub — Editor</title>
-<link rel="stylesheet" href="./styles.css">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Coder Hub — Editor</title><link rel="stylesheet" href="./styles.css">
 </head>
 <body class="editor-page">
 <header class="topbar"><a class="brand" href="./index.html"><span class="brand-mark">&lt;/&gt;</span> Coder Hub</a><div class="presence"><span class="dot"></span><span id="status">Connecting…</span></div><button class="ghost" id="signin">Sign in</button></header>
@@ -13,7 +10,7 @@
 <div class="modal hidden" id="modal"><div class="modal-card"><button class="close" id="close">×</button><h2 id="modalTitle">Join a room</h2><p id="modalText">Enter the room ID to join.</p><input id="roomName" placeholder="Room ID" maxlength="80"><button class="primary full" id="modalAction">Join room</button><p id="roomMessage" class="modal-error"></p></div></div>
 <div class="modal hidden" id="authModal"><div class="modal-card auth-card"><button class="close" id="authClose">×</button><p class="eyebrow">CODER HUB ACCOUNT</p><h2 id="authTitle">Sign in</h2><p id="authText">Sign in to open this coding room.</p><form id="authForm"><input id="authEmail" type="email" placeholder="Email address" autocomplete="email" required><input id="authPassword" type="password" placeholder="Password" minlength="6" required><button class="primary full" id="authAction" type="submit">Sign in</button></form><button class="link-button" id="authToggle" type="button">Need an account? Create one</button><p class="auth-message" id="authMessage"></p></div></div>
 <div class="modal hidden" id="inviteModal"><div class="modal-card invite-card"><button class="close" id="inviteClose">×</button><p class="eyebrow">TEAM ACCESS</p><h2>Invite collaborators</h2><p>Share this room link or Room ID with your teammates.</p><div class="invite-link-row"><input id="inviteLink" readonly><button class="primary" id="copyInvite">Copy</button></div><div class="invite-room"><span>Room ID</span><strong id="inviteRoomId"></strong></div><h3>Members</h3><div id="memberManager" class="member-manager"></div></div></div>
-<button id="createRoom" class="hidden" type="button"></button><button id="joinRoom" class="hidden" type="button">
+<button id="createRoom" class="hidden" type="button"></button><button id="joinRoom" class="hidden" type="button"></button>
 <script type="module" src="./app.js"></script><script type="module" src="./dashboard.js"></script><script type="module" src="./editor-bridge.js"></script>
 </body>
 </html>
