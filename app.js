@@ -9,12 +9,12 @@ const input = $('#roomName'), action = $('#modalAction');
 const homeView = $('#homeView'), featuresView = $('#featuresView'), workspaceView = $('#workspaceView');
 const codeEditor = $('#codeEditor'), syncState = $('#syncState');
 const membersEl = $('#members'), memberCount = $('#memberCount'), messagesEl = $('#messages');
-let authMode = 'signin', roomId = null, roomUnsub = null, membersUnsub = null, messagesUnsub = null;
+let authMode = 'signin', roomId = null, roomUnsub = null, fileUnsub = null, membersUnsub = null, messagesUnsub = null;
 let saveTimer = null, applyingRemote = false;
 
 function openRoom(mode) {
   $('#modalTitle').textContent = mode === 'create' ? 'Create a room' : 'Join a room';
-  $('#modalText').textContent = mode === 'create' ? 'Choose a room name to get started.' : 'Enter the room ID or room name.';
+  $('#modalText').textContent = mode === 'create' ? 'Choose a room name to get started.' : 'Enter the room ID.';
   input.placeholder = mode === 'create' ? 'e.g. frontend-team' : 'Room ID';
   action.textContent = mode === 'create' ? 'Create room' : 'Join room';
   modal.classList.remove('hidden'); input.focus();
@@ -60,7 +60,22 @@ async function createRoom(name) {
   const cleanName = name.trim().replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 32);
   if (!cleanName) return showError('Choose a valid room name.');
   const roomRef = doc(collection(db, 'rooms'));
-  await setDoc(roomRef, { name: cleanName, ownerId: auth.currentUser.uid, language: 'javascript', code: codeEditor.value, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  await setDoc(roomRef, { name: cleanName, ownerId: auth.currentUser.uid, language: 'javascript', createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  await setDoc(doc(db, 'rooms', roomRef.id, 'members', auth.currentUser.uid), {
+    uid: auth.currentUser.uid,
+    name: auth.currentUser.displayName || auth.currentUser.email.split('@')[0],
+    email: auth.currentUser.email,
+    joinedAt: serverTimestamp(),
+    lastSeen: serverTimestamp()
+  });
+  await setDoc(doc(db, 'rooms', roomRef.id, 'files', 'main-js'), {
+    name: 'main.js',
+    language: 'javascript',
+    content: '// Welcome to Coder Hub\n\nconsole.log("Hello, Coder Hub!");\n',
+    ownerId: auth.currentUser.uid,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp()
+  });
   return roomRef.id;
 }
 async function joinRoom(value) {
@@ -77,30 +92,43 @@ async function enterRoom(id) {
   const roomRef = doc(db, 'rooms', id);
   await setDoc(doc(db, 'rooms', id, 'members', auth.currentUser.uid), { uid: auth.currentUser.uid, name: auth.currentUser.displayName || auth.currentUser.email.split('@')[0], email: auth.currentUser.email, joinedAt: serverTimestamp(), lastSeen: serverTimestamp() }, { merge: true });
 
-  roomUnsub?.(); membersUnsub?.(); messagesUnsub?.();
+  roomUnsub?.(); fileUnsub?.(); membersUnsub?.(); messagesUnsub?.();
   roomUnsub = onSnapshot(roomRef, snap => {
     if (!snap.exists()) { leaveRoom(); return showError('Room not found.'); }
     const data = snap.data(); $('#workspaceTitle').textContent = data.name || 'Coding room';
-    if (!applyingRemote && typeof data.code === 'string') { applyingRemote = true; codeEditor.value = data.code; applyingRemote = false; }
-    $('#fileLabel').textContent = `main.${data.language === 'javascript' ? 'js' : data.language}`;
+    $('#fileLabel').textContent = 'main.js';
+  }, error => { syncState.textContent = 'Room error'; showError(error.message); });
+
+  const fileRef = doc(db, 'rooms', id, 'files', 'main-js');
+  fileUnsub = onSnapshot(fileRef, snap => {
+    if (!snap.exists()) return;
+    const data = snap.data();
+    if (!applyingRemote && typeof data.content === 'string') {
+      applyingRemote = true; codeEditor.value = data.content; applyingRemote = false;
+    }
     syncState.textContent = 'Synced';
   }, error => { syncState.textContent = 'Sync error'; showError(error.message); });
 
   membersUnsub = onSnapshot(collection(db, 'rooms', id, 'members'), snap => {
-    const members = snap.docs.map(d => d.data()); memberCount.textContent = members.length; membersEl.innerHTML = members.map(m => `<div class="member"><span class="avatar">${escapeHtml((m.name || '?')[0].toUpperCase())}</span><span>${escapeHtml(m.name || 'Developer')}</span></div>`).join('');
-  });
+    const members = snap.docs.map(d => d.data());
+    memberCount.textContent = members.length;
+    membersEl.innerHTML = members.map(m => `<div class="member"><span class="avatar">${escapeHtml((m.name || '?')[0].toUpperCase())}</span><span>${escapeHtml(m.name || 'Developer')}</span></div>`).join('');
+  }, error => showError(error.message));
+
   messagesUnsub = onSnapshot(query(collection(db, 'rooms', id, 'messages'), orderBy('createdAt', 'asc')), snap => {
     messagesEl.innerHTML = snap.docs.map(d => { const m=d.data(); return `<div class="message"><b>${escapeHtml(m.name || 'Developer')}</b><p>${escapeHtml(m.text || '')}</p></div>`; }).join('');
     messagesEl.scrollTop = messagesEl.scrollHeight;
-  }, () => { messagesEl.innerHTML = '<p class="muted">Chat is unavailable until Firestore indexes/rules are ready.</p>'; });
+  }, () => { messagesEl.innerHTML = '<p class="muted">Chat is unavailable until Firestore is ready.</p>'; });
 }
 
 codeEditor.addEventListener('input', () => {
   if (!roomId || applyingRemote) return;
   syncState.textContent = 'Saving…'; clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
-    try { await updateDoc(doc(db, 'rooms', roomId), { code: codeEditor.value, updatedAt: serverTimestamp() }); syncState.textContent = 'Saved'; }
-    catch (error) { syncState.textContent = 'Save failed'; }
+    try {
+      await updateDoc(doc(db, 'rooms', roomId, 'files', 'main-js'), { content: codeEditor.value, updatedAt: serverTimestamp() });
+      syncState.textContent = 'Saved';
+    } catch (error) { syncState.textContent = 'Save failed'; }
   }, 350);
 });
 
@@ -113,7 +141,7 @@ $('#chatForm').addEventListener('submit', async e => {
 });
 
 function leaveRoom() {
-  roomUnsub?.(); membersUnsub?.(); messagesUnsub?.(); roomUnsub = membersUnsub = messagesUnsub = null; roomId = null;
+  roomUnsub?.(); fileUnsub?.(); membersUnsub?.(); messagesUnsub?.(); roomUnsub = fileUnsub = membersUnsub = messagesUnsub = null; roomId = null;
   workspaceView.classList.add('hidden'); homeView.classList.remove('hidden'); featuresView.classList.remove('hidden');
   status.textContent = auth.currentUser ? `Signed in as ${auth.currentUser.displayName || auth.currentUser.email}` : 'Ready to collaborate';
 }
