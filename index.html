@@ -49,6 +49,23 @@
   </main>
 
   <div class="modal hidden" id="modal"><div class="modal-card"><button class="close" id="close">×</button><h2 id="modalTitle">Create a room</h2><p id="modalText">Choose a room name to get started.</p><input id="roomName" placeholder="e.g. frontend-team" maxlength="32" /><button class="primary full" id="modalAction">Continue</button></div></div>
-  <script src="./app.js"></script>
+
+  <div class="modal hidden" id="authModal">
+    <div class="modal-card auth-card">
+      <button class="close" id="authClose">×</button>
+      <p class="eyebrow">CODER HUB ACCOUNT</p>
+      <h2 id="authTitle">Sign in</h2>
+      <p id="authText">Sign in to create rooms and collaborate with your team.</p>
+      <form id="authForm">
+        <input id="authEmail" type="email" placeholder="Email address" autocomplete="email" required />
+        <input id="authPassword" type="password" placeholder="Password" autocomplete="current-password" minlength="6" required />
+        <button class="primary full" id="authAction" type="submit">Sign in</button>
+      </form>
+      <button class="link-button" id="authToggle" type="button">Need an account? Create one</button>
+      <p class="auth-message" id="authMessage"></p>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
