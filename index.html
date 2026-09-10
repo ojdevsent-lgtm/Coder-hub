@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Coder Hub — collaborate on code in real time." />
+  <title>Coder Hub</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#"><span class="brand-mark">&lt;/&gt;</span> Coder Hub</a>
+    <div class="presence"><span class="dot"></span><span id="status">Ready to collaborate</span></div>
+    <button class="ghost" id="signin">Sign in</button>
+  </header>
+
+  <main class="app-shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">REAL-TIME COLLABORATION</p>
+        <h1>Code together.<br><span>Build together.</span></h1>
+        <p class="subcopy">A focused workspace for developers to write, review and share code with friends in real time.</p>
+        <div class="actions">
+          <button class="primary" id="createRoom">Create a room</button>
+          <button class="secondary" id="joinRoom">Join a room</button>
+        </div>
+      </div>
+      <div class="editor-card" aria-label="Code editor preview">
+        <div class="editor-top"><span class="traffic red"></span><span class="traffic yellow"></span><span class="traffic green"></span><span class="file">main.js</span><span class="live">● LIVE</span></div>
+        <pre><code><span class="kw">const</span> <span class="name">coderHub</span> = {
+  <span class="prop">mode</span>: <span class="str">"collaborative"</span>,
+  <span class="prop">presence</span>: <span class="bool">true</span>,
+  <span class="prop">instantSync</span>: <span class="bool">true</span>
+};
+
+<span class="kw">function</span> <span class="fn">buildTogether</span>(team) {
+  <span class="kw">return</span> team.<span class="fn">map</span>(developer =&gt;
+    developer.<span class="fn">create</span>()
+  );
+}</code></pre>
+      </div>
+    </section>
+
+    <section class="features">
+      <article><b>01</b><h2>Shared editor</h2><p>See code changes as they happen, without refreshes.</p></article>
+      <article><b>02</b><h2>Live presence</h2><p>Know who is in the room and what they are working on.</p></article>
+      <article><b>03</b><h2>Rooms</h2><p>Create a private workspace and invite your coding partners.</p></article>
+    </section>
+  </main>
+
+  <div class="modal hidden" id="modal"><div class="modal-card"><button class="close" id="close">×</button><h2 id="modalTitle">Create a room</h2><p id="modalText">Choose a room name to get started.</p><input id="roomName" placeholder="e.g. frontend-team" maxlength="32" /><button class="primary full" id="modalAction">Continue</button></div></div>
+  <script src="./app.js"></script>
+</body>
+</html>
